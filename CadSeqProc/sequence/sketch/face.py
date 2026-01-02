@@ -1,234 +1,374 @@
+#face.py
 import os, sys
+from typing import List
 
 sys.path.append("..")
 sys.path.append("/".join(os.path.abspath(__file__).split("/")[:-4]))
 
-
 import numpy as np
 from CadSeqProc.utility.logger import CLGLogger
 from CadSeqProc.utility.macro import *
-from .loop import LoopSequence
+from CadSeqProc.geometry.curve import Curve
+from CadSeqProc.geometry.line import Line
+from CadSeqProc.geometry.arc import Arc
+from CadSeqProc.geometry.circle import Circle
 from CadSeqProc.utility.utils import (
+    get_orientation,
+    merge_list,
+    flatten,
     random_sample_points,
-    perform_op,
-    split_array,
+    merge_end_tokens_from_loop,
     write_stl_file,
+    write_ply,
+    point_distance,
+    create_matched_pair,
 )
+from rich import print
 from loguru import logger
-from OCC.Core.BRepCheck import (
-    BRepCheck_Analyzer,
-    BRepCheck_Result,
-    BRepCheck_ListOfStatus,
-)
-from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeFace
-from OCC.Core.ShapeFix import ShapeFix_Face
-from OCC.Core.BRepGProp import brepgprop
-from OCC.Core.GProp import GProp_GProps
 import matplotlib.pyplot as plt
-from typing import List
+#from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeWire
+#from OCC.Core.ShapeFix import ShapeFix_Wire
+#from OCC.Extend.DataExchange import write_step_file
+from scipy.optimize import linear_sum_assignment
 
 clglogger = CLGLogger().configure_logger().logger
 
 
-class FaceSequence(object):
+class LoopSequence(object):
 
-    def __init__(self, loopdata: List[LoopSequence], reorder: bool = True) -> None:
-        self.loopdata = loopdata
-        self.quantize_metadata = {}
+    def __init__(
+        self,
+        curvedata: List[Curve],
+        is_outer=False,
+        post_processing=True,
+        fix_collinearity=False,
+    ) -> None:
+        self.curvedata = curvedata
+        self.is_outer = is_outer
+        self.collinear_curves = []
 
-        if reorder:
-            # Reorder Faces according to the minimum bounding box coordinates
-            self.reorder()
+        # if post_processing:
+        # Reorder the loop to fix connectivity, orientation and collinearity
+        self.reorder(orientation_fix=True, collinearity_fix=fix_collinearity)
+
+        # If post processing is set on, fix the line start and end point error
+        n_curve = len(self.curvedata)
+
+        if post_processing:
+            for i, cv in enumerate(self.curvedata):
+                if n_curve == 1:
+                    continue
+                else:
+                    if cv.curve_type == "line":
+                        if (
+                            np.sum(
+                                cv.metadata["start_point"] - cv.metadata["end_point"]
+                            )
+                            == 0
+                        ):
+                            cv.metadata["end_point"] += 1
+                            self.curvedata[(i + 1) % n_curve].metadata[
+                                "start_point"
+                            ] = cv.metadata["end_point"]
 
     @property
     def token_index(self):
-        return SKETCH_TOKEN.index("END_FACE")
+        return SKETCH_TOKEN.index("END_LOOP")
 
     @staticmethod
-    def from_dict(face_entity: dict, loop_uid: str):
-        # Faces consists of One loop
-        loopdata = []
+    def from_dict(loop_entity: dict):
+        is_outer = loop_entity["is_outer"]
+        curvedata = []
+        curves = loop_entity["profile_curves"]
+        for i in range(len(curves)):
+            curve_type = curves[i]["type"]
 
-        loop_entity = face_entity["profiles"][loop_uid]
-        for i, lp in enumerate(loop_entity["loops"]):
-            loopdata.append(LoopSequence.from_dict(lp))
+            if curve_type == "Line3D":
+                curvedata.append(Line.from_dict(curves[i]))
+            if curve_type == "Arc3D":
+                curvedata.append(Arc.from_dict(curves[i]))
+            if curve_type == "Circle3D":
+                curvedata.append(Circle.from_dict(curves[i]))
 
-        return FaceSequence(loopdata, True)
+        return LoopSequence(curvedata, is_outer, False)
 
     @staticmethod
-    def from_minimal_json(face_stat):
-        loop_seq = []
-        for _, val in face_stat.items():
-            loop_seq.append(LoopSequence.from_minimal_json(val))
+    def from_minimal_json(loop_stat):
+        curvedata = []
         
-        return FaceSequence(loop_seq, False)
-    
+        for curve_id, val in loop_stat.items():
+            curve_type = curve_id.split("_")[0]
+            if curve_type == "line":
+                curvedata.append(Line.from_minimal_json(val))
+            if curve_type == "arc":
+                curvedata.append(Arc.from_minimal_json(val))
+            if curve_type == "circle":
+                curvedata.append(Circle.from_minimal_json(val))
+
+        return LoopSequence(curvedata, False, False)
+
+    @property
+    def start_point(self):
+        # if len(self.curvedata)>1:
+        #     return self.curvedata[0].start_point
+        # else:
+        return self.curvedata[0].start_point
+
+    @property
+    def bbox(self):
+        if len(self.curvedata) <= 1:
+            return self.curvedata[0].bbox
+        else:
+            all_min_box = []
+            all_max_box = []
+            for curve in self.curvedata:
+                if curve is not None:
+                    bbox = curve.bbox
+                    all_min_box.append(bbox[0])
+                    all_max_box.append(bbox[1])
+        return np.array([np.min(all_min_box, axis=0), np.max(all_max_box, axis=0)])
+
     def to_vec(self):
         """
-        Vector Representation of Face
+        Vector Representation of Loop
         """
         coord_token = []
-        for lp in self.loopdata:
-            vec = lp.to_vec()
+        for cv in self.curvedata:
+            vec = cv.to_vec()
             coord_token += vec
         coord_token.append([self.token_index, 0])
         return coord_token
 
-    def reorder(self):
-        if len(self.loopdata) <= 1:
-            return
-        all_loops_bbox_min = np.stack(
-            [loop.bbox[0] for loop in self.loopdata], axis=0
-        ).round(6)
-        ind = np.lexsort(all_loops_bbox_min.transpose()[[1, 0]])
-        self.loopdata = [self.loopdata[i] for i in ind]
-
     @staticmethod
     def from_vec(vec, bit, post_processing, fix_collinearity):
         """
-        Vec is the list of loops
+        Vec is the list of curves
         """
-        lp = []
-        merged_vec = split_array(vec, val=SKETCH_TOKEN.index("END_LOOP"))
-        for lp_tokens in merged_vec:
-            lp.append(
-                LoopSequence.from_vec(
-                    vec=lp_tokens,
-                    bit=bit,
-                    post_processing=post_processing,
-                    fix_collinearity=fix_collinearity,
+        cv = []
+        merged_vec = merge_end_tokens_from_loop(vec)[0]
+        for cv_tokens in merged_vec:
+            if len(merged_vec) == 1:
+                cv.append(
+                    Circle.from_vec(
+                        vec=cv_tokens,
+                        bit=bit,
+                        post_processing=post_processing,
+                    )
                 )
+            elif len(cv_tokens) == 2:
+                cv.append(
+                    Line.from_vec(
+                        vec=cv_tokens,
+                        bit=bit,
+                        post_processing=post_processing,
+                    )
+                )
+            elif len(cv_tokens) == 3:
+                cv.append(
+                    Arc.from_vec(
+                        vec=cv_tokens,
+                        bit=bit,
+                        post_processing=post_processing,
+                    )
+                )
+            else:
+                raise ValueError(f"Invalid Curve Tokens {cv_tokens}")
+        if len(cv) == 0:
+            raise Exception(f"No Curves Added for vec {vec}")
+        return LoopSequence(
+            curvedata=cv,
+            post_processing=post_processing,
+            fix_collinearity=fix_collinearity,
+        )
+
+    @property
+    def direction(self):
+        first_curve = self.curvedata[0]
+        if first_curve.curve_type == "circle":
+            try:
+                return get_orientation(
+                    first_curve.get_point("pt1"),
+                    first_curve.get_point("pt2"),
+                    first_curve.get_point("pt3"),
+                )
+            except:
+                return "counterclockwise"
+        else:
+            return get_orientation(
+                first_curve.get_point("start_point"),
+                first_curve.get_point("end_point"),
+                self.curvedata[1].get_point("end_point"),
             )
-        if len(lp) == 0:
-            raise Exception(f"No Loops Added for vec {vec}")
-        return FaceSequence(
-            loopdata=lp, reorder=False
-        )  # No reordering during evaluation
 
-    def __repr__(self):
-        s = "Face:"  # Start with bold text for "Loop:"
-        for loop in self.loopdata:
-            s += f"\n          - {loop.__repr__()}"  # Add the curve representation with blue color
+    @staticmethod
+    def is_connected(curvedata: List[Curve]):
+        """
+        Check if curve is connected
+        """
+        n = len(curvedata)
+        if n == 1:
+            return True
 
-        return s + "\n"
+        for i, curve in enumerate(curvedata):
+            if (
+                i > 0
+                and i < n - 1
+                and not np.allclose(
+                    curvedata[i - 1].get_point("end_point"),
+                    curve.get_point("start_point"),
+                )
+            ):
+                clglogger.critical(
+                    f"Curve is not connected {curvedata} at {curvedata[i-1],curve}"
+                )
+                return False
+            elif i == n - 1 and not np.allclose(
+                curvedata[0].get_point("start_point"), curve.get_point("end_point")
+            ):
+                clglogger.critical(
+                    f"Curve is not connected {curvedata} at {curve,curvedata[0]}"
+                )
+                return False
+        clglogger.success("Curve is connected")
+        return True
 
+    @staticmethod
+    def ensure_connectivity(curvedata: List[Curve], verbose=False):
+        """
+        Create a connected loop from the existing curves
+        """
+        if len(curvedata) <= 1:
+            return curvedata
+
+        new_curvedata = [curvedata[0]]
+
+        n = len(curvedata)
+        for i, curve in enumerate(curvedata):
+            if i > 0:
+                if i < n - 1 and np.allclose(
+                    new_curvedata[-1].get_point("end_point"),
+                    curve.get_point("end_point"),
+                ):
+                    curve.reverse()
+                    new_curvedata.append(curve)
+                elif (
+                    i == n - 1
+                    and np.allclose(
+                        new_curvedata[-1].get_point("end_point"),
+                        curve.get_point("end_point"),
+                    )
+                    or np.allclose(
+                        curve.get_point("start_point"),
+                        new_curvedata[0].get_point("start_point"),
+                    )
+                ):
+                    curve.reverse()
+                    new_curvedata.append(curve)
+                else:
+                    new_curvedata.append(curve)
+        if verbose:
+            LoopSequence.is_connected(curvedata)
+
+        return new_curvedata
+
+    def reorder(self, orientation_fix=True, collinearity_fix=True):
+        """reorder by starting left most and counter-clockwise. Fix Collinearity if exists by merging (for lines only)"""
+        if len(self.curvedata) <= 1:
+            return
+
+        start_curve_idx = -1
+        sx, sy = 10000, 10000
+        total_curve = len(self.curvedata)
+
+        self.curvedata = LoopSequence.ensure_connectivity(
+            self.curvedata, verbose=False
+        )  # Connected Loop
+        # LoopSequence.is_connected(self.curvedata) # Check if the loop is connected
+
+        # correct start-end point order and find left-most point
+        for i, curve in enumerate(self.curvedata):
+            if round(curve.get_point("start_point")[0], 6) < round(sx, 6) or (
+                round(curve.get_point("start_point")[0], 6) == round(sx, 6)
+                and round(curve.get_point("start_point")[1], 6) < round(sy, 6)
+            ):
+                start_curve_idx = i
+                sx, sy = curve.get_point("start_point")
+
+        self.curvedata = (
+            self.curvedata[start_curve_idx:] + self.curvedata[:start_curve_idx]
+        )
+
+        # Fix Orientation so that loop is created counter-clockwise
+        if (
+            self.direction == "clockwise"
+            and orientation_fix
+            and len(self.curvedata) > 1
+        ):
+            self.curvedata = self.curvedata[::-1]
+
+            for i in range(len(self.curvedata)):
+                self.curvedata[i].reverse()
+
+        # Fix Collinearity
+        if len(self.curvedata) > 1 and collinearity_fix:
+            collinear_pair = []
+            for i in range(len(self.curvedata) - 1):
+                if self.curvedata[i].is_collinear(self.curvedata[i + 1]):
+                    collinear_pair.append([i, i + 1])
+                    self.collinear_curves.append(
+                        [self.curvedata[i], self.curvedata[i + 1]]
+                    )
+                else:
+                    collinear_pair.append([i])
+            if len(self.curvedata) - 1 not in flatten(collinear_pair):
+                collinear_pair.append([len(self.curvedata) - 1])
+            collinear_pair = merge_list(collinear_pair)
+            self.new_curvedata = []
+
+            for p in collinear_pair:
+                if len(p) == 1:
+                    self.new_curvedata.append(self.curvedata[p[0]])
+                else:
+                    curve = self.curvedata[p[0]]
+                    curve.merge(self.curvedata[p[-1]])
+                    self.new_curvedata.append(curve)
+
+            self.curvedata = self.new_curvedata
+
+    @property
+    def all_curves(self):
+        return self.curvedata
+
+    def transform3D(self, coordsystem):
+        for curve in self.curvedata:
+            curve.transform3D(coordsystem=coordsystem)
 
     def transform(self, translate=None, scale=1):
         if translate is None:
             translate = 0
-        for loop in self.loopdata:
-            loop.transform(translate=translate, scale=scale)
+        for curve in self.curvedata:
+            curve.transform(translate=translate, scale=scale)
 
-    # @logger.catch()
+    def __repr__(self):
+        s = f"Loop: Start Point: {list(np.round(self.start_point,4))}, Direction: {self.direction}"  # bbox {list(np.round(self.bbox,4))}"  # Start with bold text for "Loop:"
+        for curve in self.curvedata:
+            s += f"\n              - {curve.__repr__()}"  # Add the curve representation with blue color
+        return s + "\n"
+
+    def add_info(self, key_, val_):
+        self.curvedata[key_] = val_
+
     def sample_points(self, n_points):
         all_points = []
 
-        for loop in self.loopdata:
+        for curve in self.curvedata:
             all_points.append(
-                loop.sample_points(n_points=n_points)
+                curve.sample_points(n_points=n_points)
             )
-
         all_points = np.vstack(all_points)
         random_points = random_sample_points(all_points, n_points)[0]
         # random_points=all_points
         return random_points
-
-    @property
-    def all_curves(self):
-        all_curves = []
-        for lp in self.loopdata:
-            all_curves += lp.all_curves
-
-        return all_curves
-
-    @property
-    def start_point(self):
-        return self.loopdata[0].start_point
-
-    @property
-    def all_loops(self):
-        all_loops = []
-        for lp in self.loopdata:
-            all_loops.append(lp)
-        return all_loops
-
-    @property
-    def bbox(self):
-        all_min_box = []
-        all_max_box = []
-        for lp in self.loopdata:
-            bbox = lp.bbox
-            all_min_box.append(bbox[0])
-            all_max_box.append(bbox[1])
-        return np.array([np.min(all_min_box, axis=0), np.max(all_max_box, axis=0)])
-
-    def build_body(self, plane, normal, coordsystem):
-        """
-        plane: gp_Pln object. Sketch Plane where a face will be constructed
-        normal: gp_Dir object
-        transform: gp_Trsf object
-        """
-        face_list = []
-        # plane=self.plane
-        # Save all the loop
-        for lp in self.loopdata:
-            face_builder = BRepBuilderAPI_MakeFace(
-                plane,
-                lp.build_body(
-                    normal=normal, coordsystem=coordsystem
-                ),
-            )
-            if not face_builder.IsDone():
-                raise Exception("face builder not done")
-            face = face_builder.Face()
-
-            # Fix face
-            fixer = ShapeFix_Face(face)
-            fixer.SetPrecision(PRECISION)
-            fixer.FixOrientation()
-
-            # analyzer = BRepCheck_Analyzer(fixer.Face())
-            # if not analyzer.IsValid():
-            #     clglogger.error(f"{lp}{normal}{coordsystem}")
-            #     raise Exception(f"face check failed.")
-
-            face_list.append(fixer.Face())
-
-        # Find the outer wire (rest becomes inner wires)
-        props = GProp_GProps()
-        outer_idx = 0
-        redo = True
-        while redo:
-            for f_idx, face in enumerate(face_list):
-                # Skip outer face itself
-                if f_idx == outer_idx:
-                    continue
-                # Cut inner face from outer
-                cut_face = perform_op(face_list[outer_idx], face, "cut")
-                # Compute area, check if inner is larger than outer
-                brepgprop.SurfaceProperties(cut_face, props)
-                area = props.Mass()
-                if area == 0.0:
-                    outer_idx = f_idx
-                    break
-            redo = False
-
-        # Create final closed loop face
-        inner_idx = list(set(list(range(0, len(face_list)))) - set([outer_idx]))
-        inner_faces = [face_list[i] for i in inner_idx]
-        final_face = face_list[outer_idx]
-        for face in inner_faces:
-            final_face = perform_op(final_face, face, "cut")
-
-        return face_list[0], final_face
-
-    def numericalize(self, bit=N_BIT):
-        for lp in self.loopdata:
-            lp.numericalize(bit=bit)
-
-    def denumericalize(self, bit):
-        for lp in self.loopdata:
-            lp.denumericalize(bit=bit)
 
     def draw(self, ax=None, colors=None):
         if ax is None:
@@ -246,133 +386,164 @@ class FaceSequence(object):
             ] * 10
         else:
             colors = [colors] * 100
-        for i, loop in enumerate(self.loopdata):
-            loop.draw(ax, colors[i])
+        for i, curve in enumerate(self.curvedata):
+            curve.draw(ax, colors[i])
 
+    def build_body(self, normal, coordsystem):
+        topo_wire = BRepBuilderAPI_MakeWire()
+        for cv in self.curvedata:
+            if cv.curve_type.lower() == "circle":
+                topo_wire.Add(
+                    cv.build_body(
+                        normal=normal, coordsystem=coordsystem
+                    )
+                )
+            else:
+                topo_wire.Add(
+                    cv.build_body(coordsystem=coordsystem)
+                )
+            if not topo_wire.IsDone():
+                raise Exception("wire builder not done")
+
+        fixer = ShapeFix_Wire()
+        fixer.Load(topo_wire.Wire())
+        fixer.SetPrecision(PRECISION)
+        fixer.FixClosed()
+        fixer.Perform()
+
+        return fixer.Wire()
+
+    def numericalize(self, bit=N_BIT):
+        for cv in self.curvedata:
+            cv.numericalize(bit=bit)
+
+        # Fix Invalidity
+        # for i,cv in enumerate(self.curvedata[:-1]):
+        #     if cv.curve_type.lower()=="line":
+        #         if np.sum(cv.metadata['start_point']-cv.metadata['end_point'])==0:
+        #             cv.metadata['end_point']+=1
+        #             self.curvedata[i+1].metadata['start_point']=cv.metadata['end_point']
+
+    def denumericalize(self, bit):
+        for cv in self.curvedata:
+            cv.denumericalize(bit=bit)
+
+    def loop_distance(self, target_loop, scale: float):
+        return point_distance(self.bbox * scale, target_loop.bbox * scale, type="l2")
+
+    @staticmethod
+    def match_primitives(gt_loop, pred_loop, scale: float, multiplier: int = 1):
+        """
+        Match primitives (e.g., curves) based on their bounding box distances.
+
+        Args:
+            gt_loop (object): Ground truth loop object.
+            pred_loop (object): Predicted loop object.
+            scale (float): The scaling factor.
+            multiplier (int, optional): Multiplier for cost matrix. Defaults to 1.
+
+        Returns:
+            list: List containing matched ground truth and predicted curves.
+        """
+        if gt_loop is None:
+            gt_curves = [None]
+        else:
+            gt_curves = gt_loop.all_curves
+
+        if pred_loop is None:
+            pred_curves = [None]
+        else:
+            pred_curves = pred_loop.all_curves
+
+        n_gt = len(gt_curves)
+        n_pred = len(pred_curves)
+        n_max = max(n_gt, n_pred)
+
+        # Initialize cost matrix with ones and apply multiplier
+        cost_matrix = np.ones((n_max, n_max)) * multiplier
+
+        # Pad lists with None if needed
+        if n_gt < n_max:
+            gt_curves += [None] * (n_max - n_gt)
+
+        if n_pred < n_max:
+            pred_curves += [None] * (n_max - n_pred)
+
+        # Calculate Cost by calculating the distance between loops
+        for ind_self in range(n_gt):
+            for ind_pred in range(n_pred):
+                if (
+                    gt_curves[ind_self] is not None
+                    and pred_curves[ind_pred] is not None
+                ):
+                    cost_matrix[ind_self, ind_pred] = gt_curves[
+                        ind_self
+                    ].curve_distance(pred_curves[ind_pred], scale)
+
+        # Use Hungarian matching to find the best matching
+        row_indices, col_indices = linear_sum_assignment(cost_matrix)
+
+        # row_indices=list(row_indices)
+        # col_indices=list(col_indices)
+        # print(row_indices, col_indices)
+
+        # Create a new pair with matched ground truth and predicted curves
+        new_pair = create_matched_pair(
+            list1=gt_curves,
+            list2=pred_curves,
+            row_indices=row_indices,
+            col_indices=col_indices,
+        )
+        return new_pair
 
     def _json(self):
-        face_json = {}
-        for i, loop in enumerate(self.loopdata):
-            face_json[f"loop_{i+1}"] = loop._json()
-
-        return face_json
-
+        loop_json = {}
+        curve_num_dict = {"line": 1, "arc": 1, "circle": 1}
+        for i, curve in enumerate(self.curvedata):
+            loop_json[f"{curve.curve_type}_{curve_num_dict[curve.curve_type]}"] = (
+                curve._json()
+            )
+            curve_num_dict[curve.curve_type] += 1
+        return loop_json
 
 
 if __name__ == "__main__":
-    face_dict = {
-        "transform": {
-            "origin": {"y": 0.0, "x": 0.0, "z": 0.0},
-            "y_axis": {"y": 0.0, "x": 0.0, "z": 1.0},
-            "x_axis": {"y": 1.0, "x": 0.0, "z": 0.0},
-            "z_axis": {"y": 0.0, "x": 1.0, "z": 0.0},
-        },
-        "type": "Sketch",
-        "name": "Sketch 1",
-        "profiles": {
-            "JGC": {
-                "loops": [
-                    {
-                        "is_outer": True,
-                        "profile_curves": [
-                            {
-                                "center_point": {"y": 0.0762, "x": 0.0, "z": 0.0},
-                                "type": "Circle3D",
-                                "radius": 0.06000001,
-                                "curve": "JGR",
-                                "normal": {"y": 0.0, "x": 1.0, "z": 0.0},
-                            }
-                        ],
-                    }
-                ],
-                "properties": {},
+    loop_dict = {
+        "is_outer": True,
+        "profile_curves": [
+            {
+                "type": "Line3D",
+                "start_point": {"y": 0.3048, "x": 0.3048, "z": 0.0},
+                "curve": "JGB",
+                "end_point": {"x": 0.166, "y": 0.3048, "z": 0.0},
             },
-            "JGK": {
-                "loops": [
-                    {
-                        "is_outer": True,
-                        "profile_curves": [
-                            {
-                                "type": "Line3D",
-                                "start_point": {"y": 0.3048, "x": 0.3048, "z": 0.0},
-                                "curve": "JGB",
-                                "end_point": {"y": 0.3048, "x": -0.3048, "z": 0.0},
-                            },
-                            {
-                                "type": "Line3D",
-                                "start_point": {"y": 0.3048, "x": -0.3048, "z": 0.0},
-                                "curve": "JGN",
-                                "end_point": {"y": -0.3048, "x": -0.3048, "z": 0.0},
-                            },
-                            {
-                                "type": "Line3D",
-                                "start_point": {"y": -0.3048, "x": 0.3048, "z": 0.0},
-                                "curve": "JGF",
-                                "end_point": {"y": -0.3048, "x": -0.3048, "z": 0.0},
-                            },
-                            {
-                                "type": "Line3D",
-                                "start_point": {"y": 0.3048, "x": 0.3048, "z": 0.0},
-                                "curve": "JGJ",
-                                "end_point": {"y": -0.3048, "x": 0.3048, "z": 0.0},
-                            },
-                        ],
-                    },
-                    {
-                        "is_outer": True,
-                        "profile_curves": [
-                            {
-                                "center_point": {"y": 0.0762, "x": 0.0, "z": 0.0},
-                                "type": "Circle3D",
-                                "radius": 0.06000001,
-                                "curve": "JGR",
-                                "normal": {"y": 0.0, "x": 1.0, "z": 0.0},
-                            }
-                        ],
-                    },
-                    {
-                        "is_outer": True,
-                        "profile_curves": [
-                            {
-                                "center_point": {"y": -0.08540001, "x": 0.0, "z": 0.0},
-                                "type": "Circle3D",
-                                "radius": 0.06000001,
-                                "curve": "JGV",
-                                "normal": {"y": 0.0, "x": 1.0, "z": 0.0},
-                            }
-                        ],
-                    },
-                ],
-                "properties": {},
+            {
+                "type": "Line3D",
+                "start_point": {"x": 0.166, "y": 0.3048, "z": 0.0},
+                "curve": "JGB",
+                "end_point": {"x": -0.3048, "y": 0.3048, "z": 0.0},
             },
-            "JGG": {
-                "loops": [
-                    {
-                        "is_outer": True,
-                        "profile_curves": [
-                            {
-                                "center_point": {"y": -0.08540001, "x": 0.0, "z": 0.0},
-                                "type": "Circle3D",
-                                "radius": 0.06000001,
-                                "curve": "JGV",
-                                "normal": {"y": 0.0, "x": 1.0, "z": 0.0},
-                            }
-                        ],
-                    }
-                ],
-                "properties": {},
+            {
+                "type": "Line3D",
+                "start_point": {"y": 0.3048, "x": -0.3048, "z": 0.0},
+                "curve": "JGN",
+                "end_point": {"y": -0.3048, "x": -0.3048, "z": 0.0},
             },
-        },
-        "reference_plane": {},
+            {
+                "type": "Line3D",
+                "start_point": {"y": -0.3048, "x": 0.3048, "z": 0.0},
+                "curve": "JGF",
+                "end_point": {"y": -0.3048, "x": -0.3048, "z": 0.0},
+            },
+            {
+                "type": "Line3D",
+                "start_point": {"y": 0.3048, "x": 0.3048, "z": 0.0},
+                "curve": "JGJ",
+                "end_point": {"y": -0.3048, "x": 0.3048, "z": 0.0},
+            },
+        ],
     }
 
-    face = FaceSequence.from_dict(face_dict, "JGK")
-    print(face._json())
-    # print(face.all_curves)
-
-    # import open3d as o3d
-    # pcd = o3d.geometry.PointCloud()
-    # pcd.points = o3d.utility.Vector3dVector(points)
-
-    # # Save PointCloud object as PLY file
-    # o3d.io.write_point_cloud("/home/mkhan/Codes/point2cad/output/output.ply", pcd)
+    loop = LoopSequence.from_dict(loop_dict)
+    loop.reorder()
+    print(loop._json())
