@@ -1,3 +1,4 @@
+#coord_system
 import os, sys
 
 sys.path.append("..")
@@ -14,7 +15,7 @@ from CadSeqProc.utility.utils import (
 )
 from CadSeqProc.utility.macro import *
 from loguru import logger
-from OCC.Core.gp import gp_Trsf, gp_Vec, gp_Ax3, gp_Dir, gp_Ax1, gp_Pnt
+#from OCC.Core.gp import gp_Trsf, gp_Vec, gp_Ax3, gp_Dir, gp_Ax1, gp_Pnt
 from rich import print
 from scipy.spatial.transform import Rotation as R
 import math
