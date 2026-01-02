@@ -1,3 +1,4 @@
+#arc.py
 import os
 import sys
 from pathlib import Path
@@ -7,8 +8,8 @@ sys.path.append("..")
 sys.path.append("/".join(os.path.abspath(__file__).split("/")[:-3]))
 
 import matplotlib.pyplot as plt
-from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
-from OCC.Core.GC import GC_MakeArcOfCircle
+#from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+#from OCC.Core.GC import GC_MakeArcOfCircle
 from loguru import logger
 from rich import print
 from CadSeqProc.utility.utils import (
