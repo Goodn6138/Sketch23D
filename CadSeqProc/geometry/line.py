@@ -1,3 +1,4 @@
+#line.py
 import copy
 import os, sys
 
@@ -23,8 +24,8 @@ import torch
 from loguru import logger
 import matplotlib.pyplot as plt
 import matplotlib.lines as lines
-from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
-from OCC.Core.gp import gp_Pnt
+#from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+#from OCC.Core.gp import gp_Pnt
 
 clglogger = CLGLogger().configure_logger().logger
 
