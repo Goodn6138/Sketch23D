@@ -1,3 +1,4 @@
+#sketchsequence.py
 import os, sys
 
 sys.path.append("..")
@@ -19,10 +20,10 @@ from CadSeqProc.utility.macro import *
 from rich import print
 from .face import FaceSequence, LoopSequence
 from loguru import logger
-from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
-from OCC.Core.gp import gp_Vec, gp_Pln, gp_Dir, gp_Ax3
-from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakePrism
-from OCC.Extend.DataExchange import write_step_file
+#from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
+#from OCC.Core.gp import gp_Vec, gp_Pln, gp_Dir, gp_Ax3
+#from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakePrism
+#from OCC.Extend.DataExchange import write_step_file
 from .coord_system import CoordinateSystem
 import copy
 from scipy.optimize import linear_sum_assignment
