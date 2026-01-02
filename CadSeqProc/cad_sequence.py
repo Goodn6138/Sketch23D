@@ -1,3 +1,5 @@
+#cad_sequence.py
+
 # Adding Python Path
 import os, sys
 
@@ -36,17 +38,17 @@ from trimesh.sample import sample_surface, sample_surface_even
 from loguru import logger
 from rich import print
 import json
-from OCC.Core.BRepGProp import brepgprop
-from OCC.Core.GProp import GProp_GProps
-from OCC.Core.BRepCheck import BRepCheck_Analyzer
-from OCC.Extend.DataExchange import write_step_file
+#from OCC.Core.BRepGProp import brepgprop
+#from OCC.Core.GProp import GProp_GProps
+#from OCC.Core.BRepCheck import BRepCheck_Analyzer
+#from OCC.Extend.DataExchange import write_step_file
 import signal
 from contextlib import contextmanager
 import copy
-from OCC.Core import BRepAdaptor
+#from OCC.Core import BRepAdaptor
 from CadSeqProc.OCCUtils.Topology import Topo
-from OCC.Core.TopExp import TopExp_Explorer
-from OCC.Core.TopAbs import TopAbs_FACE
+#from OCC.Core.TopExp import TopExp_Explorer
+#from OCC.Core.TopAbs import TopAbs_FACE
 import torch
 from typing import List
 from collections import OrderedDict
