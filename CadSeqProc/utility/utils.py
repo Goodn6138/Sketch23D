@@ -1,3 +1,4 @@
+#utils.py
 import math
 import matplotlib.pyplot
 import numpy as np
@@ -13,10 +14,10 @@ import warnings
 import numpy as np
 import math
 from pathlib import Path
-from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
-from OCC.Core.StlAPI import StlAPI_Writer, StlAPI_Reader
+#from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
+#from OCC.Core.StlAPI import StlAPI_Writer, StlAPI_Reader
 # from OCC.Display.SimpleGui import init_display
-from OCC.Core.gp import gp_Pnt, gp_Vec, gp_Dir, gp_XYZ, gp_Ax3, gp_Trsf, gp_Pln
+#from OCC.Core.gp import gp_Pnt, gp_Vec, gp_Dir, gp_XYZ, gp_Ax3, gp_Trsf, gp_Pln
 # from collections import OrderedDict
 from torch.optim.lr_scheduler import LambdaLR
 import json
@@ -26,11 +27,11 @@ import pickle
 import random
 import trimesh
 from plyfile import PlyData, PlyElement
-from OCC.Core.STEPControl import STEPControl_Writer, STEPControl_AsIs
-from OCC.Core.TopoDS import TopoDS_Shape, TopoDS_Builder, TopoDS_Compound
+#from OCC.Core.STEPControl import STEPControl_Writer, STEPControl_AsIs
+#from OCC.Core.TopoDS import TopoDS_Shape, TopoDS_Builder, TopoDS_Compound
 import joblib
 from scipy.spatial import cKDTree
-from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Fuse, BRepAlgoAPI_Cut, BRepAlgoAPI_Common
+#from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Fuse, BRepAlgoAPI_Cut, BRepAlgoAPI_Common
 
 warnings.filterwarnings("ignore")
 import contextlib
@@ -42,12 +43,12 @@ from hashlib import sha256
 import copy
 import concurrent.futures
 import matplotlib.pyplot as plt
-from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeWire, BRepBuilderAPI_Transform
-from OCC.Core.AIS import AIS_Shape
-from OCC.Core.Quantity import Quantity_Color, Quantity_TOC_RGB
+#from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeWire, BRepBuilderAPI_Transform
+#from OCC.Core.AIS import AIS_Shape
+#from OCC.Core.Quantity import Quantity_Color, Quantity_TOC_RGB
 import torch.nn.functional as F
 # from .decorator import measure_performance
-from OCC.Core.BRepTools import breptools_Write
+#from OCC.Core.BRepTools import breptools_Write
 
 
 
