@@ -1,3 +1,4 @@
+#loop.py
 import os, sys
 from typing import List
 
@@ -25,9 +26,9 @@ from CadSeqProc.utility.utils import (
 from rich import print
 from loguru import logger
 import matplotlib.pyplot as plt
-from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeWire
-from OCC.Core.ShapeFix import ShapeFix_Wire
-from OCC.Extend.DataExchange import write_step_file
+#from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeWire
+#from OCC.Core.ShapeFix import ShapeFix_Wire
+#from OCC.Extend.DataExchange import write_step_file
 from scipy.optimize import linear_sum_assignment
 
 clglogger = CLGLogger().configure_logger().logger
